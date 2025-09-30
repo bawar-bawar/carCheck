@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VIN Report Checker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="min-h-screen bg-slate-50 text-slate-800">
+  <header class="bg-white border-b">
+    <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+      <h1 class="text-xl font-semibold">VIN Report Checker</h1>
+      <a class="text-sm text-slate-500 hover:text-slate-700" href="#" onclick="location.reload()">Reset</a>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-4 py-6 space-y-4">
+    <!-- Form -->
+    <form id="vinForm" class="bg-white border rounded-lg p-4 shadow-sm space-y-3">
+      <label class="block">
+        <span class="block text-sm font-medium text-slate-700">Vehicle Identification Number (VIN)</span>
+        <div class="mt-1 flex gap-2">
+          <input
+            id="vinInput"
+            type="text"
+            inputmode="latin"
+            autocomplete="off"
+            placeholder="Enter VIN (17 characters)"
+            minlength="17"
+            maxlength="17"
+            pattern="^[A-HJ-NPR-Z0-9]{17}$"
+            title="VIN must be 17 characters (letters A-H, J-N, P, R-Z and digits 0-9; I, O, Q are not allowed)."
+            class="w-full rounded-md border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 px-3 py-2 uppercase tracking-wider"
+          />
+          <button
+            id="submitBtn"
+            type="submit"
+            class="shrink-0 inline-flex items-center justify-center rounded-md bg-indigo-600 text-white px-4 py-2 font-medium hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed transition"
+            disabled
+          >
+            Get Report
+          </button>
+        </div>
+      </label>
+      <p class="text-xs text-slate-500">
+        Tip: VINs are 17 chars and do not include I, O, or Q.
+      </p>
+      <div id="message" class="hidden"></div>
+    </form>
+
+    <!-- Report viewer -->
+    <div class="relative">
+      <div id="placeholder" class="absolute inset-0 flex items-center justify-center text-slate-400 pointer-events-none">
+        Your report will appear here after submitting a VIN.
+      </div>
+      <iframe
+        id="reportFrame"
+        title="VIN Report"
+        class="w-full h-[70vh] bg-white border rounded-lg shadow-sm"
+        sandbox="allow-forms allow-popups"
+        referrerpolicy="no-referrer"
+      ></iframe>
+    </div>
+  </main>
+
+  <script>
+
+    const form = document.getElementById("vinForm");
+    const vinInput = document.getElementById("vinInput");
+    const submitBtn = document.getElementById("submitBtn");
+    const messageEl = document.getElementById("message");
+    const frame = document.getElementById("reportFrame");
+    const placeholder = document.getElementById("placeholder");
+
+    let abortController = null;
+
+    // Live sanitize/validate VIN input
+    vinInput.addEventListener("input", (e) => {
+      // Uppercase, strip invalid chars (keep only A-H, J-N, P, R-Z, 0-9)
+      const cleaned = e.target.value
+        .toUpperCase()
+        .replace(/[^A-HJ-NPR-Z0-9]/g, "")
+        .slice(0, 17);
+      if (cleaned !== e.target.value) e.target.value = cleaned;
+
+      submitBtn.disabled = cleaned.length !== 17;
+      clearMessage();
+    });
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      const vin = vinInput.value.trim().toUpperCase();
+      if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) {
+        showError("Please enter a valid 17-character VIN.");
+        return;
+      }
+
+      // Cancel any in-flight request
+      if (abortController) abortController.abort();
+      abortController = new AbortController();
+
+      setLoading(true);
+      clearMessage();
+
+     const API_URL = `http://198.199.90.224/api/v1/new/photo/check/{iaai|copart|manheim}?vincode=1N4BL4DV3RN355523&api_key=ee3aa9d0-4c41-4016-b3f1-0391e370fa53`;
+
+      try {
+        const res = await fetch(API_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "text/html, text/plain;q=0.9, */*;q=0.8",
+          },
+        });
+
+        if (!res.ok) {
+          const text = await safeReadText(res);
+          throw new Error(`API error ${res.status}: ${text?.slice(0, 200) || res.statusText}`);
+        }
+
+        // The API returns an HTML document
+        const html = await res.text();
+        renderHTML(html);
+      } catch (err) {
+        if (err.name !== "AbortError") showError(err.message || "Failed to fetch report.");
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    function renderHTML(html) {
+      placeholder.classList.add("hidden");
+
+      // Default: sandboxed iframe with srcdoc (safer; blocks scripts).
+      // If your report requires JS, see options below.
+      frame.setAttribute("sandbox", "allow-forms allow-popups");
+      frame.removeAttribute("src");
+      frame.srcdoc = html;
+
+      // OPTION A (trusted HTML that needs JS):
+      // frame.setAttribute("sandbox", "allow-scripts allow-forms allow-popups");
+      // frame.srcdoc = html;
+
+      // OPTION B (HTML with relative assets; keeps them working):
+      // const blob = new Blob([html], { type: "text/html" });
+      // const url = URL.createObjectURL(blob);
+      // frame.removeAttribute("srcdoc");
+      // frame.src = url;
+      // frame.onload = () => URL.revokeObjectURL(url);
+    }
+
+    function setLoading(isLoading) {
+      submitBtn.disabled = isLoading || vinInput.value.length !== 17;
+      submitBtn.innerHTML = isLoading
+        ? spinnerHTML("Fetching...")
+        : "Get Report";
+    }
+
+    function showError(text) {
+      messageEl.className = "block mt-2 p-3 rounded-md border border-red-200 bg-red-50 text-red-700 text-sm";
+      messageEl.textContent = text;
+      placeholder.classList.remove("hidden");
+      // Clear previous content
+      frame.removeAttribute("srcdoc");
+      frame.removeAttribute("src");
+    }
+
+    function clearMessage() {
+      messageEl.className = "hidden";
+      messageEl.textContent = "";
+    }
+
+    function spinnerHTML(label) {
+      return `
+        <svg class="animate-spin -ml-0.5 mr-2 h-5 w-5 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path>
+        </svg>
+        <span>${label}</span>
+      `;
+    }
+
+    async function safeReadText(res) {
+      try { return await res.text(); } catch { return null; }
+    }
+  </script>
+
+  <!-- Helpful notes:
+       - Make sure your API sets CORS headers (e.g., Access-Control-Allow-Origin).
+       - If your HTML report needs JS/CSS assets, consider:
+         • Enabling "allow-scripts" sandbox (only if you trust the HTML).
+         • Or using the Blob URL approach to preserve relative asset paths.
+       - Avoid setting innerHTML directly with untrusted HTML to prevent XSS. -->
+</body>
+</html>
